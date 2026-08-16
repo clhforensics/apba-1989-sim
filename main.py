@@ -339,18 +339,25 @@ def load_data():
                 if "Player" in line and "Team" in line:
                     start_index = i
                     break
-            
+
             valid_data = lines[start_index:]
             reader = csv.DictReader(valid_data)
             for row in reader:
                 if row.get('Player') == 'Player': continue
                 t_code = row.get('Team')
                 if not t_code or t_code == 'TOT': continue
-                
+
                 p = Player(row)
                 if t_code not in teams: teams[t_code] = []
                 teams[t_code].append(p)
 
+    except FileNotFoundError:
+        print(f"{Colors.RED}Error: Could not find stats.csv. Please ensure the data file is in the same directory as main.py.{Colors.RESET}")
+        sys.exit(1)
+    except csv.Error as e:
+        print(f"{Colors.RED}Error: Malformed CSV data in {filepath}. {e}{Colors.RESET}")
+        print(f"{Colors.RED}Please ensure the CSV file is properly formatted.{Colors.RESET}")
+        sys.exit(1)
     except Exception as e:
         print(f"{Colors.RED}Read Error: {e}{Colors.RESET}")
         sys.exit(1)
