@@ -6,6 +6,7 @@ import sys
 import copy
 import sqlite3
 from datetime import datetime
+from retro_play import render_retro_game_screen, play_retro_game
 
 # ==========================================
 # CONFIGURATION
@@ -1196,7 +1197,7 @@ def main():
     print("3. Fast Sim (Instant Result)")
     print("4. DevTools / League Benchmark")
     print("5. Season Records / Standings")
-    print("6. Retro-Modern Screen Preview")
+    print("6. Retro-Modern Play Mode")
     try:
         mode = int(input("Mode (1-6): "))
     except:
@@ -1217,11 +1218,21 @@ def main():
         input("Press Enter to return...")
         return
     if mode == 6:
-        codes = [c for c in ("SAS", "BOS") if c in rosters]
-        v_team = Team(codes[0] if codes else teams[0], copy.deepcopy(rosters[codes[0] if codes else teams[0]]))
-        h_team = Team(codes[1] if len(codes) > 1 else teams[1], copy.deepcopy(rosters[codes[1] if len(codes) > 1 else teams[1]]))
-        print(render_game_screen(v_team, h_team, 1, 551, 24, ["GAMBLE leaves it for LEWIS.", "LEWIS drives to the hole."]))
-        input("Press Enter to return...")
+        from retro_play import play_retro_game
+        print("\nRetro-Modern Play Mode")
+        print("Enter Team Codes (default: SAS at BOS).")
+        v = input("Visitor: ").upper() or "SAS"
+        h = input("Home:    ").upper() or "BOS"
+        if v in rosters and h in rosters:
+            v_team = Team(v, copy.deepcopy(rosters[v]))
+            h_team = Team(h, copy.deepcopy(rosters[h]))
+            completed = play_retro_game(v_team, h_team)
+            if completed:
+                print_box_score(v_team, h_team)
+                game_id = SeasonStore().record_game(v_team, h_team)
+                print(f"{Colors.GREEN}[SEASON] Saved game #{game_id} to season.sqlite3{Colors.RESET}")
+        else:
+            print("Invalid.")
         return
 
     while True:
