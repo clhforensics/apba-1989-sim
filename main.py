@@ -4,6 +4,8 @@ import csv
 import os
 import sys
 import copy
+import sqlite3
+from datetime import datetime
 
 # ==========================================
 # CONFIGURATION
@@ -523,6 +525,299 @@ def print_box_score(team_v, team_h):
                 print(f"{p.name:<20} {p.points:<4} {p.rebounds:<4} {p.assists:<4} {p.steals:<4} {p.turnovers:<4} {p.threes_made:<4} {ft:<6} {p.fouls:<4} {int(p.stat_minutes)}")
     print("\n")
 
+
+# ==========================================
+# RETRO-MODERN PRESENTATION LAYER
+# ==========================================
+
+TEAM_NAMES = {
+    "ATL": "Hawks", "BOS": "Celtics", "CHH": "Hornets", "CHI": "Bulls",
+    "CLE": "Cavaliers", "DAL": "Mavericks", "DEN": "Nuggets", "DET": "Pistons",
+    "GSW": "Warriors", "HOU": "Rockets", "IND": "Pacers", "LAC": "Clippers",
+    "LAL": "Lakers", "MIA": "Heat", "MIL": "Bucks", "NJN": "Nets",
+    "NYK": "Knicks", "PHI": "76ers", "PHO": "Suns", "POR": "Blazers",
+    "SAC": "Kings", "SAS": "Spurs", "SEA": "Sonics", "UTA": "Jazz", "WSB": "Bullets",
+}
+
+
+def team_display_name(code):
+    return TEAM_NAMES.get(code, code)
+
+
+def format_clock(time_remaining):
+    mins = int(time_remaining // 60)
+    secs = int(time_remaining % 60)
+    return f"{mins}:{secs:02d}"
+
+
+def fit_text(text, width):
+    text = str(text)
+    if len(text) <= width:
+        return text.ljust(width)
+    return text[:max(0, width - 1)] + "…"
+
+
+def roster_panel(team, title_width=30):
+    """Return old-PC style roster lines with starters and bench plus Pts/PF/Min."""
+    lines = [f"{team_display_name(team.code):<{title_width-11}} {'Pts':>3} {'PF':>2} {'Min':>3}"]
+    lineup = team.get_lineup()
+    bench = team.get_bench()
+    for idx, p in enumerate(lineup, start=1):
+        lines.append(f"{idx:<2}{fit_text(p.name.upper(), title_width-15)} {p.points:>3} {p.fouls:>2} {int(p.stat_minutes):>3}")
+    lines.append("─" * title_width)
+    for idx, p in enumerate(bench[:7]):
+        label = chr(ord('A') + idx)
+        lines.append(f"{label:<2}{fit_text(p.name.upper(), title_width-15)} {p.points:>3} {p.fouls:>2} {int(p.stat_minutes):>3}")
+    while len(lines) < 14:
+        lines.append("".ljust(title_width))
+    return [line[:title_width].ljust(title_width) for line in lines]
+
+
+def render_modern_court(width=64):
+    """Modernized terminal hardwood inside a retro DOS frame."""
+    inner = width - 2
+    center = inner // 2
+    court = []
+    court.append("╔" + "═" * inner + "╗")
+    court.append("║" + fit_text("MODERN NBA COURT", inner).center(inner) + "║")
+    rows = [list(" " * inner) for _ in range(15)]
+    # midcourt and center logo
+    for y in range(len(rows)):
+        rows[y][center] = "│"
+    rows[7][center-1:center+2] = list("◎│")[:3]
+    # paint boxes
+    for side_x in (4, inner - 17):
+        rows[4][side_x:side_x+13] = list("┌───────────┐")
+        rows[5][side_x:side_x+13] = list("│   PAINT   │")
+        rows[6][side_x:side_x+13] = list("│           │")
+        rows[7][side_x:side_x+13] = list("└───────────┘")
+    # modern arc/restricted-area impression
+    left_arc = [
+        (2, 20, "╭"), (3, 18, "╭"), (4, 17, "│"), (5, 17, "│"),
+        (6, 18, "╰"), (7, 20, "╰"),
+    ]
+    right_arc = [(y, inner - x - 1, ch.replace("╭", "╮").replace("╰", "╯")) for y, x, ch in left_arc]
+    for y, x, ch in left_arc + right_arc:
+        if 0 <= y < len(rows) and 0 <= x < inner:
+            rows[y][x] = ch
+    rows[6][10] = "◦"; rows[6][inner-11] = "◦"
+    rows[7][11] = "◦"; rows[7][inner-12] = "◦"
+    for row in rows:
+        court.append("║" + "".join(row) + "║")
+    court.append("╚" + "═" * inner + "╝")
+    return court
+
+
+def render_scoreboard(v_team, h_team, quarter, time_remaining, shot_clock=24):
+    return [
+        "┌──────────────────────── SCOREBOARD ────────────────────────┐",
+        f"│ {team_display_name(v_team.code):<16} {v_team.score:>3}   Qtr {quarter:^3}   {team_display_name(h_team.code):>16} {h_team.score:>3} │",
+        f"│ {'':<20} {format_clock(time_remaining):^11}  :{shot_clock:02d} {'':>20} │",
+        "└────────────────────────────────────────────────────────────┘",
+    ]
+
+
+def render_game_screen(v_team, h_team, quarter, time_remaining, shot_clock=24, pbp_lines=None):
+    """Render the screenshot-inspired DOS shell with a modern NBA court.
+
+    The reference screenshot uses black space, side roster panels, a top scoreboard,
+    side timeout/foul blocks, and a bottom PBP crawl. This keeps that old-PC
+    layout while making the court more modern and readable in a terminal.
+    """
+    pbp_lines = list(pbp_lines or [])[-8:]
+    left = roster_panel(v_team)
+    right = roster_panel(h_team)
+    board = render_scoreboard(v_team, h_team, quarter, time_remaining, shot_clock)
+    court = render_modern_court()
+    blank = " " * 30
+    lines = []
+    for i in range(max(len(left), len(right), len(board))):
+        l = left[i] if i < len(left) else blank
+        mid = board[i] if i < len(board) else " " * len(board[0])
+        r = right[i] if i < len(right) else blank
+        lines.append(f"{l} {mid} {r}")
+    lines.append(f"{'Time':<30} {'':^64} {'Time':>30}")
+    lines.append(f"{'Outs':<30} {'':^64} {'Outs':>30}")
+    lines.append(f"{v_team.timeouts:<30} {'':^64} {h_team.timeouts:>30}")
+    lines.append(f"{'Team':<30} {'':^64} {'Team':>30}")
+    lines.append(f"{'Fouls':<30} {'':^64} {'Fouls':>30}")
+    lines.append(f"{v_team.team_fouls:<30} {'':^64} {h_team.team_fouls:>30}")
+    for row in court:
+        lines.append(" " * 32 + row)
+    lines.append("┌" + "─" * 96 + "┐")
+    lines.append("│" + "PLAY-BY-PLAY".center(96) + "│")
+    for msg in pbp_lines:
+        lines.append("│ " + fit_text(msg, 94) + " │")
+    while len(pbp_lines) < 6:
+        pbp_lines.append("")
+        lines.append("│ " + " " * 94 + " │")
+    lines.append("└" + "─" * 96 + "┘")
+    return "\n".join(lines)
+
+
+# ==========================================
+# SEASON STATS / RECORDS
+# ==========================================
+
+class SeasonStore:
+    def __init__(self, db_path="season.sqlite3"):
+        self.db_path = db_path
+        self.conn = sqlite3.connect(db_path)
+        self.conn.row_factory = sqlite3.Row
+        self.create_schema()
+
+    def create_schema(self):
+        cur = self.conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS seasons (
+                name TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS games (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                season_name TEXT NOT NULL,
+                played_at TEXT NOT NULL,
+                visitor TEXT NOT NULL,
+                home TEXT NOT NULL,
+                visitor_score INTEGER NOT NULL,
+                home_score INTEGER NOT NULL,
+                winner TEXT NOT NULL,
+                loser TEXT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS team_game_stats (
+                game_id INTEGER NOT NULL,
+                season_name TEXT NOT NULL,
+                team TEXT NOT NULL,
+                opponent TEXT NOT NULL,
+                points INTEGER NOT NULL,
+                fgm INTEGER, fga INTEGER, three_pm INTEGER, three_pa INTEGER,
+                ftm INTEGER, fta INTEGER, rebounds INTEGER, assists INTEGER,
+                steals INTEGER, turnovers INTEGER, fouls INTEGER,
+                win INTEGER NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS player_game_stats (
+                game_id INTEGER NOT NULL,
+                season_name TEXT NOT NULL,
+                team TEXT NOT NULL,
+                player TEXT NOT NULL,
+                minutes REAL NOT NULL,
+                PTS INTEGER, REB INTEGER, AST INTEGER, STL INTEGER, TOV INTEGER,
+                FGM INTEGER, FGA INTEGER, TPM INTEGER, TPA INTEGER, FTM INTEGER,
+                FTA INTEGER, PF INTEGER
+            )
+        """)
+        self.conn.commit()
+
+    def start_season(self, name="1988-89"):
+        self.conn.execute(
+            "INSERT OR IGNORE INTO seasons(name, created_at) VALUES (?, ?)",
+            (name, datetime.now().isoformat(timespec="seconds")),
+        )
+        self.conn.commit()
+
+    def record_game(self, visitor_team, home_team, season_name="1988-89"):
+        self.start_season(season_name)
+        winner = visitor_team.code if visitor_team.score >= home_team.score else home_team.code
+        loser = home_team.code if winner == visitor_team.code else visitor_team.code
+        cur = self.conn.cursor()
+        cur.execute(
+            """INSERT INTO games(season_name, played_at, visitor, home, visitor_score, home_score, winner, loser)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (season_name, datetime.now().isoformat(timespec="seconds"), visitor_team.code, home_team.code,
+             visitor_team.score, home_team.score, winner, loser),
+        )
+        game_id = cur.lastrowid
+        for team, opponent in ((visitor_team, home_team), (home_team, visitor_team)):
+            stats = team.get_team_stats()
+            cur.execute(
+                """INSERT INTO team_game_stats(game_id, season_name, team, opponent, points, fgm, fga, three_pm, three_pa,
+                   ftm, fta, rebounds, assists, steals, turnovers, fouls, win)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (game_id, season_name, team.code, opponent.code, team.score, stats["FGM"], stats["FGA"], stats["3PM"],
+                 stats["3PA"], stats["FTM"], stats["FTA"], stats["REB"], stats["AST"], stats["STL"], stats["TOV"],
+                 stats["PF"], 1 if team.code == winner else 0),
+            )
+            for p in team.roster:
+                if p.stat_minutes <= 0 and p.points == 0 and p.rebounds == 0 and p.assists == 0:
+                    continue
+                cur.execute(
+                    """INSERT INTO player_game_stats(game_id, season_name, team, player, minutes, PTS, REB, AST, STL, TOV,
+                       FGM, FGA, TPM, TPA, FTM, FTA, PF)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (game_id, season_name, team.code, p.name, p.stat_minutes, p.points, p.rebounds, p.assists, p.steals,
+                     p.turnovers, p.makes, p.shots, p.threes_made, p.threes_att, p.ft_made, p.ft_attempts, p.fouls),
+                )
+        self.conn.commit()
+        return int(game_id)
+
+    def get_standings(self, season_name="1988-89"):
+        rows = self.conn.execute(
+            """
+            SELECT team,
+                   SUM(win) AS wins,
+                   SUM(CASE WHEN win=1 THEN 0 ELSE 1 END) AS losses,
+                   SUM(points) AS points_for,
+                   SUM((SELECT points FROM team_game_stats t2 WHERE t2.game_id=t.game_id AND t2.team=t.opponent)) AS points_against
+            FROM team_game_stats t
+            WHERE season_name=?
+            GROUP BY team
+            ORDER BY wins DESC, losses ASC, team ASC
+            """,
+            (season_name,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_player_leaders(self, stat="PTS", season_name="1988-89", limit=10):
+        allowed = {"PTS", "REB", "AST", "STL", "TOV", "FGM", "FGA", "TPM", "TPA", "FTM", "FTA", "PF"}
+        stat = stat.upper()
+        if stat not in allowed:
+            raise ValueError(f"Unsupported stat: {stat}")
+        rows = self.conn.execute(
+            f"""
+            SELECT player, team, COUNT(*) AS GP, SUM(minutes) AS MIN, SUM({stat}) AS {stat}
+            FROM player_game_stats
+            WHERE season_name=?
+            GROUP BY player, team
+            ORDER BY SUM({stat}) DESC, player ASC
+            LIMIT ?
+            """,
+            (season_name, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def export_standings_csv(self, path, season_name="1988-89"):
+        rows = self.get_standings(season_name)
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["team", "wins", "losses", "points_for", "points_against"])
+            writer.writeheader()
+            writer.writerows(rows)
+        return path
+
+    def close(self):
+        self.conn.close()
+
+
+def print_standings(rows):
+    print(f"\n{Colors.BOLD}TEAM STANDINGS{Colors.RESET}")
+    print(f"{'TEAM':<6} {'W':>3} {'L':>3} {'PF':>6} {'PA':>6}")
+    print("-" * 28)
+    for r in rows:
+        print(f"{r['team']:<6} {r['wins']:>3} {r['losses']:>3} {r['points_for']:>6} {r['points_against']:>6}")
+
+
+def print_player_leaders(rows, stat="PTS"):
+    print(f"\n{Colors.BOLD}PLAYER LEADERS - {stat.upper()}{Colors.RESET}")
+    print(f"{'PLAYER':<22} {'TM':<4} {'GP':>3} {stat.upper():>6}")
+    print("-" * 40)
+    for r in rows:
+        print(f"{r['player']:<22} {r['team']:<4} {r['GP']:>3} {int(r[stat.upper()] or 0):>6}")
+
 # ==========================================
 # DEVTOOLS & BENCHMARKING
 # ==========================================
@@ -900,13 +1195,33 @@ def main():
     print("2. Quarter-by-Quarter (Classic Sim)")
     print("3. Fast Sim (Instant Result)")
     print("4. DevTools / League Benchmark")
+    print("5. Season Records / Standings")
+    print("6. Retro-Modern Screen Preview")
     try:
-        mode = int(input("Mode (1-4): "))
+        mode = int(input("Mode (1-6): "))
     except:
         mode = 2 
 
     if mode == 4:
         run_benchmark_suite(rosters)
+        return
+    if mode == 5:
+        store = SeasonStore()
+        print("1. View Standings")
+        print("2. View Scoring Leaders")
+        print("3. Export Standings CSV")
+        ch = input("Choice: ")
+        if ch == '1': print_standings(store.get_standings())
+        elif ch == '2': print_player_leaders(store.get_player_leaders("PTS"), "PTS")
+        elif ch == '3': print(f"Exported: {store.export_standings_csv('standings.csv')}")
+        input("Press Enter to return...")
+        return
+    if mode == 6:
+        codes = [c for c in ("SAS", "BOS") if c in rosters]
+        v_team = Team(codes[0] if codes else teams[0], copy.deepcopy(rosters[codes[0] if codes else teams[0]]))
+        h_team = Team(codes[1] if len(codes) > 1 else teams[1], copy.deepcopy(rosters[codes[1] if len(codes) > 1 else teams[1]]))
+        print(render_game_screen(v_team, h_team, 1, 551, 24, ["GAMBLE leaves it for LEWIS.", "LEWIS drives to the hole."]))
+        input("Press Enter to return...")
         return
 
     while True:
@@ -923,6 +1238,9 @@ def main():
             v_team = Team(v, copy.deepcopy(rosters[v]))
             h_team = Team(h, copy.deepcopy(rosters[h]))
             play_game(v_team, h_team, mode)
+            if v_team.score or h_team.score:
+                game_id = SeasonStore().record_game(v_team, h_team)
+                print(f"{Colors.GREEN}[SEASON] Saved game #{game_id} to season.sqlite3{Colors.RESET}")
         else:
             print("Invalid.")
 
