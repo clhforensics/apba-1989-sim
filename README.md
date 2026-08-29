@@ -37,7 +37,7 @@ This is a standard-library Python project: no `pip install` required.
 - Timeout and team-foul side panels.
 - Modernized terminal court with paint, arcs, center-court marker, and bottom play-by-play feed.
 
-Use menu option **6. Retro-Modern Screen Preview** to view the presentation shell.
+Use menu option **6. Retro-Modern Play Mode** to play possession-by-possession inside the presentation shell.
 
 ### Season Stats and Records
 
@@ -71,7 +71,7 @@ Make sure `stats.csv` is in the same directory as `main.py`.
 3. **Fast Sim** — instant game result.
 4. **DevTools / League Benchmark** — simulate many games and compare to 1988-89 NBA averages.
 5. **Season Records / Standings** — view standings, scoring leaders, or export standings CSV.
-6. **Retro-Modern Screen Preview** — view the screenshot-inspired court/shell layout.
+6. **Retro-Modern Play Mode** — play possession-by-possession in the screenshot-inspired court/shell layout.
 
 ## Controls
 
