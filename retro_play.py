@@ -1,6 +1,7 @@
 import os
 import random
 import re
+import shutil
 
 RESET = "\033[0m"
 WHITE = "\033[97m"
@@ -29,12 +30,33 @@ def strip_ansi(text):
     return re.sub(r"\x1b\[[0-9;]*m", "", str(text))
 
 
+def visible_len(text):
+    return len(strip_ansi(text))
+
+
 def fit(text, width):
     text = str(text)
     raw = strip_ansi(text)
     if len(raw) <= width:
         return text + " " * (width - len(raw))
     return raw[: max(0, width - 1)] + "…"
+
+
+def color_fit(text, width, color):
+    return color + fit(text, width) + RESET
+
+
+def pad_visible(text, width, align="left"):
+    raw_len = visible_len(text)
+    if raw_len >= width:
+        return text
+    pad = width - raw_len
+    if align == "right":
+        return " " * pad + text
+    if align == "center":
+        left = pad // 2
+        return " " * left + text + " " * (pad - left)
+    return text + " " * pad
 
 
 def clock(seconds):
@@ -46,74 +68,115 @@ def tname(code):
     return TEAM_NAMES.get(code, code)
 
 
-def roster_lines(team, color, city=None):
+def roster_lines(team, color, width, city=None, bench_count=7):
     name = city or CITY_NAMES.get(team.code, tname(team.code))
-    lines = [f"{color}{fit(name, 13)} Pts PF{RESET}"]
+    name_w = max(8, width - 8)
+    lines = [color + f"{fit(name, name_w)} Pts PF"[:width] + RESET]
+    def player_line(label, p):
+        return color + f"{label:<2}{fit(p.name.upper(), name_w-2)} {p.points:>2} {p.fouls:>2}"[:width] + RESET
     for i, p in enumerate(team.get_lineup(), 1):
-        lines.append(f"{color}{i:<2}{fit(p.name.upper(), 12)} {p.points:>2} {p.fouls:>2}{RESET}")
-    lines.append(" " * 20)
-    for i, p in enumerate(team.get_bench()[:7]):
-        lines.append(f"{color}{chr(65+i):<2}{fit(p.name.upper(), 12)} {p.points:>2} {p.fouls:>2}{RESET}")
-    while len(lines) < 14:
-        lines.append(" " * 20)
-    return lines[:14]
+        lines.append(player_line(str(i), p))
+    lines.append(color + "─" * width + RESET)
+    for i, p in enumerate(team.get_bench()[:bench_count]):
+        lines.append(player_line(chr(65+i), p))
+    while len(lines) < 6 + bench_count:
+        lines.append(" " * width)
+    return lines[:6 + bench_count]
 
 
-def scoreboard(v_team, h_team, qtr, time_remaining, shot_clock):
-    width = 48
+def scoreboard(v_team, h_team, qtr, time_remaining, shot_clock, width):
+    inner = max(34, width - 2)
+    left_w = (inner - 8) // 2
+    right_w = inner - 8 - left_w
     return [
-        WHITE + "╔" + "═" * width + "╗" + RESET,
-        f"{WHITE}║{RESET}{SPURS}{tname(v_team.code):^14}{RESET}{CYAN}{'Qtr':^8}{RESET}{CELTICS}{tname(h_team.code):^14}{RESET}{WHITE}║{RESET}",
-        f"{WHITE}║{RESET}{SPURS}{v_team.score:^14}{RESET}{CYAN}{str(qtr):^8}{RESET}{CELTICS}{h_team.score:^14}{RESET}{WHITE}║{RESET}",
-        f"{WHITE}║{RESET}{clock(time_remaining):^24}{(':'+str(shot_clock).zfill(2)):^24}{WHITE}║{RESET}",
-        WHITE + "╚" + "═" * width + "╝" + RESET,
+        WHITE + "╔" + "═" * inner + "╗" + RESET,
+        WHITE + "║" + SPURS + fit(tname(v_team.code), left_w) + RESET + CYAN + f"{'Qtr':^8}" + RESET + CELTICS + fit(tname(h_team.code), right_w) + RESET + WHITE + "║" + RESET,
+        WHITE + "║" + SPURS + f"{v_team.score:^{left_w}}" + RESET + CYAN + f"{qtr:^8}" + RESET + CELTICS + f"{h_team.score:^{right_w}}" + RESET + WHITE + "║" + RESET,
+        WHITE + "║" + f"{clock(time_remaining):^{inner//2}}" + f"{(':'+str(shot_clock).zfill(2)):^{inner - inner//2}}" + WHITE + "║" + RESET,
+        WHITE + "╚" + "═" * inner + "╝" + RESET,
     ]
 
 
-def retro_court(width=74):
+def retro_court(width, height=12):
+    width = max(54, width)
+    height = max(9, height)
     rows = [LINE + "┌" + "─" * (width - 2) + "┐" + RESET]
-    for y in range(13):
-        base = [" "] * width
-        base[width // 2] = "│"
-        row = "".join(base)
-        if 4 <= y <= 8:
-            left = HARDWOOD + row[:3]
-            paint_l = PAINT + ("┌────────────┐" if y == 4 else "│            │" if y in (5, 6, 7) else "└────────────┘")
-            mid = HARDWOOD + row[17: width - 17]
-            paint_r = PAINT + ("┌────────────┐" if y == 4 else "│            │" if y in (5, 6, 7) else "└────────────┘")
-            right = HARDWOOD + row[width - 3:]
-            rows.append(left + paint_l + mid + paint_r + right + RESET)
+    mid = width // 2
+    paint_w = max(10, min(14, width // 6))
+    left_x = 3
+    right_x = width - 3 - paint_w
+    paint_top = max(3, height // 3)
+    paint_bottom = min(height - 2, paint_top + 4)
+    for y in range(height):
+        chars = [" "] * width
+        chars[mid] = "│"
+        line = "".join(chars)
+        if paint_top <= y <= paint_bottom:
+            border = y == paint_top or y == paint_bottom
+            paint_line = ("┌" + "─" * (paint_w - 2) + "┐") if y == paint_top else ("└" + "─" * (paint_w - 2) + "┘") if y == paint_bottom else ("│" + " " * (paint_w - 2) + "│")
+            rows.append(
+                HARDWOOD + line[:left_x] + PAINT + paint_line + HARDWOOD + line[left_x+paint_w:right_x] +
+                PAINT + paint_line + HARDWOOD + line[right_x+paint_w:] + RESET
+            )
         else:
-            rows.append(HARDWOOD + row + RESET)
+            rows.append(HARDWOOD + line + RESET)
     rows.append(LINE + "└" + "─" * (width - 2) + "┘" + RESET)
     return rows
 
 
-def render_retro_game_screen(v_team, h_team, quarter, time_remaining, shot_clock=24, pbp_lines=None):
+def compose_line(parts, width):
+    raw = "".join(parts)
+    plain = strip_ansi(raw)
+    if len(plain) <= width:
+        return raw + " " * (width - len(plain))
+    # Avoid chopping through ANSI sequences: rebuild from plain if overflow happens.
+    return plain[:width]
+
+
+def render_retro_game_screen(v_team, h_team, quarter, time_remaining, shot_clock=24, pbp_lines=None, width=None, height=None):
+    term = shutil.get_terminal_size((141, 37))
+    width = max(100, min(width or term.columns, 180))
+    height = max(30, min(height or term.lines, 60))
     pbp = list(pbp_lines or ["Line"])[-7:]
-    left = roster_lines(v_team, SPURS)
-    right = roster_lines(h_team, CELTICS)
-    board = scoreboard(v_team, h_team, quarter, time_remaining, shot_clock)
+
+    side_w = max(18, min(22, (width - 60) // 2))
+    gap = 1
+    board_w = max(42, width - (side_w * 2) - (gap * 2))
+    court_w = min(width - 2 * side_w - 6, 78)
+    court_w = max(56, court_w)
+    court_indent = side_w + 2
+    pbp_w = width - 2 * side_w - 6
+    pbp_w = max(48, pbp_w)
+
+    left = roster_lines(v_team, SPURS, side_w, bench_count=7)
+    right = roster_lines(h_team, CELTICS, side_w, bench_count=7)
+    board = scoreboard(v_team, h_team, quarter, time_remaining, shot_clock, board_w)
     lines = []
     for i in range(5):
-        lines.append(f"{left[i]:<25}{board[i]:^54}{right[i]:>25}")
-    lines.extend([
-        f"{SPURS}{'Time':<10}{RESET}{'':<90}{CELTICS}{'Time':>10}{RESET}",
-        f"{SPURS}{'Outs':<10}{RESET}{'':<90}{CELTICS}{'Outs':>10}{RESET}",
-        f"{SPURS}{str(v_team.timeouts):<10}{RESET}{'':<90}{CELTICS}{str(h_team.timeouts):>10}{RESET}",
-        f"{SPURS}{'Team':<10}{RESET}{'':<90}{CELTICS}{'Team':>10}{RESET}",
-        f"{SPURS}{'Fouls':<10}{RESET}{'':<90}{CELTICS}{'Fouls':>10}{RESET}",
-        f"{SPURS}{str(v_team.team_fouls):<10}{RESET}{'':<90}{CELTICS}{str(h_team.team_fouls):>10}{RESET}",
-    ])
-    for row in retro_court(74):
-        lines.append(f"{'':<14}{row}")
-    lines.append(f"{SPURS}{'─'*20}{RESET}  {CELTICS}{'Line':<6}{RESET}{WHITE}{'─'*66}{RESET}  {CELTICS}{'─'*20}{RESET}")
+        lines.append(compose_line([left[i], " " * gap, pad_visible(board[i], board_w, "center"), " " * gap, right[i]], width))
+
+    status = [
+        ("Time", "Time"), ("Outs", "Outs"), (str(v_team.timeouts), str(h_team.timeouts)),
+        ("Team", "Team"), ("Fouls", "Fouls"), (str(v_team.team_fouls), str(h_team.team_fouls)),
+    ]
+    for ltxt, rtxt in status:
+        lines.append(compose_line([color_fit(ltxt, side_w, SPURS), " " * (width - 2 * side_w), color_fit(rtxt, side_w, CELTICS)], width))
+
+    court_h = max(9, min(13, height - 24))
+    for row in retro_court(court_w, court_h):
+        lines.append(compose_line([" " * court_indent, row], width))
+
+    divider_mid = max(20, pbp_w - 8)
+    lines.append(compose_line([SPURS + "─" * side_w + RESET, "  ", CELTICS + fit("Line", 6) + RESET, WHITE + "─" * divider_mid + RESET, "  ", CELTICS + "─" * side_w + RESET], width))
     for i in range(7):
         msg = pbp[i] if i < len(pbp) else ""
-        l = left[6+i] if 6+i < len(left) else " " * 20
-        r = right[6+i] if 6+i < len(right) else " " * 20
-        lines.append(f"{l:<20} {CELTICS}{fit(msg, 74)}{RESET} {r:>20}")
-    return "\n".join(lines)
+        lidx = 7 + i
+        left_text = left[lidx] if lidx < len(left) else " " * side_w
+        right_text = right[lidx] if lidx < len(right) else " " * side_w
+        lines.append(compose_line([left_text, " ", CELTICS + fit(msg, pbp_w) + RESET, " ", right_text], width))
+
+    max_rows = max(1, height - 1)
+    return "\n".join(lines[:max_rows])
 
 
 def add_log(lines, msg):
@@ -137,41 +200,28 @@ def one_possession(possession, defense, time_remaining, pbp):
     is_three = shooter.has_3pt and random.random() < min(0.42, shooter.three_attempt_rate)
     foul = random.random() < min(0.16, 0.08 + shooter.free_throw_rate * 0.08)
     if foul:
-        fouler = defense.get_rebounder()
-        fouler.fouls += 1
-        defense.team_fouls += 1
+        fouler = defense.get_rebounder(); fouler.fouls += 1; defense.team_fouls += 1
         attempts = 3 if is_three else 2
         made = sum(1 for _ in range(attempts) if random.random() < shooter.ft_pct)
-        shooter.ft_attempts += attempts
-        shooter.ft_made += made
-        shooter.points += made
-        possession.score += made
+        shooter.ft_attempts += attempts; shooter.ft_made += made; shooter.points += made; possession.score += made
         add_log(pbp, f"Whistle... {shooter.name.upper()} shoots {made}/{attempts}.")
         return defense, max(0, time_remaining - pace)
     shooter.shots += 1
-    if is_three:
-        shooter.threes_att += 1
-    pct = shooter.three_pct if is_three else shooter.two_pct
-    if random.random() < pct:
+    if is_three: shooter.threes_att += 1
+    if random.random() < (shooter.three_pct if is_three else shooter.two_pct):
         pts = 3 if is_three else 2
-        possession.score += pts
-        shooter.points += pts
-        shooter.makes += 1
-        if is_three:
-            shooter.threes_made += 1
+        possession.score += pts; shooter.points += pts; shooter.makes += 1
+        if is_three: shooter.threes_made += 1
         passer = possession.get_assister(shooter)
         if passer and random.random() < 0.62:
-            passer.assists += 1
-            add_log(pbp, f"{passer.name.upper()} leaves it for {shooter.name.upper()}.")
+            passer.assists += 1; add_log(pbp, f"{passer.name.upper()} leaves it for {shooter.name.upper()}.")
         add_log(pbp, f"{shooter.name.upper()} {'from DOWNTOWN!' if is_three else random.choice(MAKE_TEXT)}")
         return defense, max(0, time_remaining - pace)
     add_log(pbp, f"{shooter.name.upper()} {random.choice(MISS_TEXT)}.")
     if random.random() < 0.72:
-        r = defense.get_rebounder(); r.rebounds += 1
-        add_log(pbp, f"{r.name.upper()} pulls down the rebound.")
+        r = defense.get_rebounder(); r.rebounds += 1; add_log(pbp, f"{r.name.upper()} pulls down the rebound.")
         return defense, max(0, time_remaining - pace)
-    r = possession.get_rebounder(); r.rebounds += 1
-    add_log(pbp, f"{r.name.upper()} grabs the OFFENSIVE board!")
+    r = possession.get_rebounder(); r.rebounds += 1; add_log(pbp, f"{r.name.upper()} grabs the OFFENSIVE board!")
     return possession, max(0, time_remaining - 5)
 
 
@@ -184,12 +234,12 @@ def play_retro_game(team_v, team_h, input_fn=input):
     possession = team_v
     quarter = 1
     time_remaining = 720
-    team_v.team_fouls = 0
-    team_h.team_fouls = 0
+    team_v.team_fouls = team_h.team_fouls = 0
     while quarter <= 4:
+        term = shutil.get_terminal_size((141, 37))
         shot_clock = min(24, int(time_remaining) if time_remaining < 24 else 24)
         clear_screen()
-        print(render_retro_game_screen(team_v, team_h, quarter, time_remaining, shot_clock, pbp))
+        print(render_retro_game_screen(team_v, team_h, quarter, time_remaining, shot_clock, pbp, width=term.columns, height=term.lines))
         choice = input_fn("\n[ENTER] Next Play | [S] Strategy | [Q] Quit > ")
         if choice.lower() == "q":
             return False
@@ -201,8 +251,7 @@ def play_retro_game(team_v, team_h, input_fn=input):
         if time_remaining <= 0:
             quarter += 1
             time_remaining = 720
-            team_v.team_fouls = 0
-            team_h.team_fouls = 0
+            team_v.team_fouls = team_h.team_fouls = 0
             add_log(pbp, f"End of quarter {quarter-1}.")
     clear_screen()
     print(render_retro_game_screen(team_v, team_h, 4, 0, 0, pbp + ["FINAL HORN."]))
